@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+# Unreal Engine
+unreal/**/Binaries/
+unreal/**/Intermediate/
+unreal/**/Saved/
+unreal/**/DerivedDataCache/
+unreal/**/*.xcworkspace
+# Java / IntelliJ
+server/target/
+server/build/
+.idea/
+*.iml
