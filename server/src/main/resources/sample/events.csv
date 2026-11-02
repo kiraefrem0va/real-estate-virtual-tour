@@ -1,0 +1,18 @@
+# сеанс;время_с;тип;помещение;отделка
+S1;0;ENTER_ROOM;hall;
+S1;20;ENTER_ROOM;kitchen;
+S1;95;SELECT_FINISH;kitchen;light
+S1;150;SELECT_FINISH;kitchen;wood
+S1;210;ENTER_ROOM;bedroom;
+S1;270;ENTER_ROOM;bath;
+S1;300;ENTER_ROOM;kitchen;
+S1;360;SELECT_FINISH;kitchen;wood
+S1;420;END;;
+# сеанс S2 с ошибками для проверки алгоритма 1
+S1;430;ENTER_ROOM;hall;
+S2;0;ENTER_ROOM;hall;
+S2;30;ENTER_ROOM;kitchen;
+S2;20;ENTER_ROOM;bath;
+S2;40;ENTER_ROOM;balcony;
+S2;50;SELECT_FINISH;kitchen;marble
+S2;60;OPEN_DOOR;kitchen;
