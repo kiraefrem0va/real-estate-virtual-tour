@@ -20,6 +20,11 @@ import java.util.Set;
  * [0] идентификатор сеанса, [1] время в секундах от начала сеанса,
  * [2] тип события, [3] идентификатор помещения, [4] идентификатор варианта отделки.
  *
+ * Каталог квартир передаётся словарями «идентификатор -> квартира»:
+ * сеанс -> квартира, помещение -> квартира, вариант отделки -> квартира.
+ * По ним проверяется, что сеанс, помещение, отделка и обращение
+ * относятся к одной и той же квартире.
+ *
  * Собственные классы данных намеренно не используются: данные передаются
  * между функциями в виде массивов и стандартных коллекций.
  */
@@ -71,14 +76,16 @@ public final class ViewSummaryProcedural {
     /**
      * Проверяет каждое поступившее событие и добавляет корректные в журнал.
      *
-     * @param incoming   поступившие события
-     * @param roomIds    идентификаторы помещений квартиры
-     * @param finishIds  идентификаторы вариантов отделки
-     * @param log        журнал принятых событий (дополняется)
-     * @param errors     сообщения об отклонённых событиях (дополняется)
+     * @param incoming         поступившие события
+     * @param sessionApartment сеанс -> квартира, которую смотрели в сеансе
+     * @param roomApartment    помещение -> квартира, к которой оно относится
+     * @param finishApartment  вариант отделки -> квартира, для которой он доступен
+     * @param log              журнал принятых событий (дополняется)
+     * @param errors           сообщения об отклонённых событиях (дополняется)
      * @return количество принятых событий
      */
-    public static int registerEvents(String[][] incoming, Set<String> roomIds, Set<String> finishIds,
+    public static int registerEvents(String[][] incoming, Map<String, String> sessionApartment,
+                                     Map<String, String> roomApartment, Map<String, String> finishApartment,
                                      List<String[]> log, List<String> errors) {
         Map<String, Long> lastTime = new HashMap<>();
         Set<String> closed = new HashSet<>();
@@ -93,7 +100,7 @@ public final class ViewSummaryProcedural {
         int accepted = 0;
         for (int i = 0; i < incoming.length; i++) {
             String[] e = incoming[i];
-            String error = checkEvent(e, roomIds, finishIds, lastTime, closed);
+            String error = checkEvent(e, sessionApartment, roomApartment, finishApartment, lastTime, closed);
             if (error != null) {
                 errors.add("Событие " + (i + 1) + " отклонено: " + error);
                 continue;
@@ -109,10 +116,16 @@ public final class ViewSummaryProcedural {
     }
 
     /** Возвращает описание ошибки или null, если событие корректно. */
-    static String checkEvent(String[] e, Set<String> roomIds, Set<String> finishIds,
+    static String checkEvent(String[] e, Map<String, String> sessionApartment,
+                             Map<String, String> roomApartment, Map<String, String> finishApartment,
                              Map<String, Long> lastTime, Set<String> closed) {
-        if (e[F_SESSION].isEmpty()) {
+        String session = e[F_SESSION];
+        if (session.isEmpty()) {
             return "не указан сеанс";
+        }
+        String apartment = sessionApartment.get(session);
+        if (apartment == null) {
+            return "неизвестный сеанс «" + session + "»";
         }
         long time;
         try {
@@ -123,27 +136,36 @@ public final class ViewSummaryProcedural {
         if (time < 0) {
             return "отрицательное время";
         }
-        if (closed.contains(e[F_SESSION])) {
-            return "сеанс " + e[F_SESSION] + " уже завершён";
+        if (closed.contains(session)) {
+            return "сеанс " + session + " уже завершён";
         }
-        Long prev = lastTime.get(e[F_SESSION]);
+        Long prev = lastTime.get(session);
         if (prev != null && time < prev) {
             return "время меньше времени предыдущего события сеанса";
         }
         String type = e[F_TYPE];
-        if (ENTER_ROOM.equals(type)) {
-            if (!roomIds.contains(e[F_ROOM])) {
-                return "неизвестное помещение «" + e[F_ROOM] + "»";
+        if (ENTER_ROOM.equals(type) || SELECT_FINISH.equals(type)) {
+            String roomError = checkBelongs("помещение", "неизвестное помещение", e[F_ROOM], apartment, roomApartment);
+            if (roomError != null) {
+                return roomError;
             }
-        } else if (SELECT_FINISH.equals(type)) {
-            if (!roomIds.contains(e[F_ROOM])) {
-                return "неизвестное помещение «" + e[F_ROOM] + "»";
-            }
-            if (!finishIds.contains(e[F_FINISH])) {
-                return "неизвестный вариант отделки «" + e[F_FINISH] + "»";
+            if (SELECT_FINISH.equals(type)) {
+                return checkBelongs("вариант отделки", "неизвестный вариант отделки", e[F_FINISH], apartment, finishApartment);
             }
         } else if (!END.equals(type)) {
             return "неизвестный тип события «" + type + "»";
+        }
+        return null;
+    }
+
+    /** Проверяет, что помещение или вариант отделки существует и относится к квартире сеанса. */
+    static String checkBelongs(String what, String unknown, String id, String apartment, Map<String, String> catalog) {
+        String owner = catalog.get(id);
+        if (owner == null) {
+            return unknown + " «" + id + "»";
+        }
+        if (!owner.equals(apartment)) {
+            return what + " «" + id + "» относится к другой квартире";
         }
         return null;
     }
@@ -205,15 +227,33 @@ public final class ViewSummaryProcedural {
 
     /**
      * Формирует для менеджера текстовую сводку просмотра, связанного с обращением.
+     * Если тура не было, сеанс относится к другой квартире или ни одно помещение
+     * не посещено, вместо сводки возвращается отметка об отсутствии сведений об осмотре.
      *
-     * @param appealId    номер обращения
-     * @param sessionId   сеанс просмотра, из которого создано обращение
-     * @param log         журнал всех событий
-     * @param roomNames   идентификатор помещения -> название
-     * @param finishNames идентификатор отделки -> название
+     * @param appealId         номер обращения
+     * @param appealApartment  квартира, по которой поступило обращение
+     * @param sessionId        сеанс просмотра, из которого создано обращение (пустая строка, если тура не было)
+     * @param sessionApartment сеанс -> квартира
+     * @param log              журнал всех событий
+     * @param roomNames        идентификатор помещения -> название
+     * @param finishNames      идентификатор отделки -> название
      */
-    public static List<String> buildSummary(String appealId, String sessionId, List<String[]> log,
+    public static List<String> buildSummary(String appealId, String appealApartment, String sessionId,
+                                            Map<String, String> sessionApartment, List<String[]> log,
                                             Map<String, String> roomNames, Map<String, String> finishNames) {
+        List<String> out = new ArrayList<>();
+        if (sessionId == null || sessionId.isEmpty()) {
+            out.add("Обращение " + appealId + " поступило без виртуального тура");
+            out.add("Сведений об осмотре нет: покупатель не проходил тур.");
+            return out;
+        }
+        out.add("Сводка просмотра по обращению " + appealId + " (сеанс " + sessionId + ")");
+        // 0) сеанс должен относиться к той же квартире, что и обращение
+        if (!appealApartment.equals(sessionApartment.get(sessionId))) {
+            out.add("Сведений об осмотре нет: сеанс относится к другой квартире, сводка не сформирована.");
+            return out;
+        }
+
         // 1) выбор событий сеанса
         List<String[]> own = new ArrayList<>();
         for (String[] e : log) {
@@ -221,16 +261,14 @@ public final class ViewSummaryProcedural {
                 own.add(e);
             }
         }
-        List<String> out = new ArrayList<>();
-        out.add("Сводка просмотра по обращению " + appealId + " (сеанс " + sessionId + ")");
-        if (own.isEmpty()) {
-            out.add("Покупатель не проходил виртуальный тур перед обращением.");
-            return out;
-        }
         String[][] events = own.toArray(new String[0][]);
 
         // 2) время и заходы по помещениям
         Map<String, long[]> stats = calculateRoomStats(events);
+        if (stats.isEmpty()) {
+            out.add("Сведений об осмотре нет: в сеансе не посещено ни одно помещение.");
+            return out;
+        }
         long total = 0;
         for (long[] s : stats.values()) {
             total += s[S_SECONDS];
@@ -274,7 +312,8 @@ public final class ViewSummaryProcedural {
                 out.add("- " + name(roomNames, c.getKey()) + ": " + name(finishNames, c.getValue()));
             }
         }
-        out.add("Наибольший интерес: " + name(roomNames, rooms[0]));
+        out.add("Дольше всего находился в помещении: " + name(roomNames, rooms[0])
+                + " (время — наблюдение, интерес уточняется в разговоре)");
         return out;
     }
 
@@ -292,15 +331,25 @@ public final class ViewSummaryProcedural {
     // ------------------------------------------------------------------
 
     public static void main(String[] args) throws IOException {
+        // каталог: две квартиры, их помещения и варианты отделки
+        Map<String, String> roomApartment = new HashMap<>();
         Map<String, String> roomNames = new LinkedHashMap<>();
-        roomNames.put("hall", "Прихожая");
-        roomNames.put("kitchen", "Кухня-гостиная");
-        roomNames.put("bedroom", "Спальня");
-        roomNames.put("bath", "Санузел");
+        addItem(roomApartment, roomNames, "hall", "K-12", "Прихожая");
+        addItem(roomApartment, roomNames, "kitchen", "K-12", "Кухня-гостиная");
+        addItem(roomApartment, roomNames, "bedroom", "K-12", "Спальня");
+        addItem(roomApartment, roomNames, "bath", "K-12", "Санузел");
+        addItem(roomApartment, roomNames, "studio", "K-27", "Комната-студия");
+        Map<String, String> finishApartment = new HashMap<>();
         Map<String, String> finishNames = new LinkedHashMap<>();
-        finishNames.put("light", "Светлая (white box)");
-        finishNames.put("wood", "Скандинавская с деревом");
-        finishNames.put("dark", "Тёмная графитовая");
+        addItem(finishApartment, finishNames, "light", "K-12", "Светлая (white box)");
+        addItem(finishApartment, finishNames, "wood", "K-12", "Скандинавская с деревом");
+        addItem(finishApartment, finishNames, "dark", "K-12", "Тёмная графитовая");
+        addItem(finishApartment, finishNames, "basic", "K-27", "Базовая");
+        // сеансы просмотра и квартиры, которые в них смотрели
+        Map<String, String> sessionApartment = new HashMap<>();
+        sessionApartment.put("S1", "K-12");
+        sessionApartment.put("S2", "K-12");
+        sessionApartment.put("S3", "K-27");
 
         Path input = args.length > 0 ? Path.of(args[0])
                 : Path.of("src/main/resources/sample/events.csv");
@@ -309,15 +358,26 @@ public final class ViewSummaryProcedural {
 
         List<String[]> log = new ArrayList<>();
         List<String> errors = new ArrayList<>();
-        int accepted = registerEvents(incoming, roomNames.keySet(), finishNames.keySet(), log, errors);
+        int accepted = registerEvents(incoming, sessionApartment, roomApartment, finishApartment, log, errors);
 
         System.out.println("Получено событий: " + incoming.length + ", принято: " + accepted);
         for (String err : errors) {
             System.out.println(err);
         }
-        System.out.println();
-        for (String line : buildSummary("A-001", "S1", log, roomNames, finishNames)) {
-            System.out.println(line);
+        // обращения: из тура по квартире K-12, из тура по квартире K-27, обычное без тура
+        String[][] appeals = {{"A-001", "K-12", "S1"}, {"A-002", "K-27", "S3"}, {"A-003", "K-12", ""}};
+        for (String[] a : appeals) {
+            System.out.println();
+            for (String line : buildSummary(a[0], a[1], a[2], sessionApartment, log, roomNames, finishNames)) {
+                System.out.println(line);
+            }
         }
+    }
+
+    /** Добавляет элемент каталога: его квартиру и название. */
+    static void addItem(Map<String, String> apartmentOf, Map<String, String> names,
+                        String id, String apartment, String title) {
+        apartmentOf.put(id, apartment);
+        names.put(id, title);
     }
 }
